@@ -3,11 +3,8 @@ from utils.space_wx import GOES_plot, NAIRAS_plot, get_Kp, get_wind_magnet, get_
 
 st.set_page_config(layout='wide') 
 
-
 st.title('High Altitude Weather Dashboard')
 
-
-st.sidebar.title('Quick Look:')
 
 NARIAS_fig, max_radiation = NAIRAS_plot()
 Kp_fig, current_Kp = get_Kp()
@@ -17,6 +14,10 @@ lmks = neutrons.get("LMKS", {"offline": True, "zscore": None})
 oulu = neutrons.get("OULU", {"offline": True, "zscore": None})
 mosc = neutrons.get("MOSC", {"offline": True, "zscore": None})
 thul = neutrons.get("THUL", {"offline": True, "zscore": None})
+
+
+
+st.sidebar.title('Quick Look:')
 
 if max_radiation < 3:
     space_wx_color = '#00ff00'
@@ -29,11 +30,11 @@ else:
 space_wx = st.sidebar.markdown(
     f'''
     <div style="background-color:{space_wx_color}; padding:10px; border-radius:5px;">
-        <h4 style="color:{text_color};">Space Wx</h4>
+        <h4 style="color:{text_color};">Current Space Wx</h4>
         <p style="color:{text_color};">Max Radiation: {round(max_radiation,2)} mrem/hr</p>
-        <p style="color:{text_color};">Current K-value: {str(current_Kp)}</p>
-        <p style="color:{text_color};">Current Solar Wind: {wind_recent} m/s</p>
-        <p style="color:{text_color};">Current Bz: {mag_recent}</p>
+        <p style="color:{text_color};">K-value: {str(current_Kp)}</p>
+        <p style="color:{text_color};">1hr Avg Solar Wind: {wind_recent} m/s</p>
+        <p style="color:{text_color};">1hr Avg Bz: {mag_recent}</p>
     </div>
     ''',
     unsafe_allow_html=True
@@ -53,19 +54,19 @@ with space_tab:
             <div style="background-color:{space_wx_color}; padding:10px; border-radius:5px;">
                 <h4 style="color:{text_color};">Neutron Monitoring Station Status</h4>
                 <p style="color:{text_color};">
-                    LMKS: z-score = {lmks['zscore'] if lmks['zscore'] is not None else 'NA'}, 
+                    LMKS: z-score = {round(lmks['z-score_day'],2) if lmks['z-score_day'] is not None else 'NA'}, 
                     offline = {lmks['offline']}
                 </p>
                 <p style="color:{text_color};">
-                    OULU: z-score = {oulu['zscore'] if oulu['zscore'] is not None else 'NA'}, 
+                    OULU: z-score = {round(oulu['z-score_day'],2) if oulu['z-score_day'] is not None else 'NA'}, 
                     offline = {oulu['offline']}
                 </p>
                 <p style="color:{text_color};">
-                    MOSC: z-score = {mosc['zscore'] if mosc['zscore'] is not None else 'NA'}, 
+                    MOSC: z-score = {round(mosc['z-score_day'],2) if mosc['z-score_day'] is not None else 'NA'}, 
                     offline = {mosc['offline']}
                 </p>
                 <p style="color:{text_color};">
-                    THUL: z-score = {thul['zscore'] if thul['zscore'] is not None else 'NA'}, 
+                    THUL: z-score = {round(thul['z-score_day'],2) if thul['z-score_day'] is not None else 'NA'}, 
                     offline = {thul['offline']}
                 </p>
             </div>
