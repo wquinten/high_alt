@@ -216,10 +216,25 @@ def get_neutrons():
     stations = ['LMKS','OULU','THUL','MOSC']
 
     offline_threshold = 15 # minutes
-    min_points = 5
+    min_points = 5 # number of points
+    spike_dip = 3 # z-score
+    stuck_points = 10 # consecutive points
 
-    resp = requests.get(NMDB_NEUTRON_URL, timeout=30)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(NMDB_NEUTRON_URL, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f'Error fetching neutron data: {e}')
+        results = {}
+        for station in stations:
+            results[station] = {
+                'offline': True, 'latest_value': None, 'time_since_last_data': None,
+                'completeness_last_hour_percent': 0.0, 'completenes_last_day_percent': 0.0,
+                'num_anomalous_spikes_hourly': 0, 'num_anomalous_spikes_daily': 0,
+                'is_value_stuck': False, 'max_abs_zscore_rate_of_change': None
+            }
+        return results
+
 
     raw_lines = resp.text.splitlines()
 
@@ -246,93 +261,121 @@ def get_neutrons():
     df['time'] = pd.to_datetime(df['time'], utc=True)
 
     for station in stations:
-        df[station] = pd.to_numeric(df[station].astype(str).str.strip(), errors='coerce')
+        if station in df.columns:
+            df[station] = pd.to_numeric(df[station].astype(str).str.strip(), errors='coerce')
     
     df = df.set_index('time')
 
 
     station_status_results = {} # to store offline status and z-score
     current_utc = pd.Timestamp.utcnow() # to check how old the last data point is
+    one_hour_ago = current_utc - pd.Timedelta(hours=1)
 
     if df.empty:
         for station in stations:
             station_status_results[stations] = {
-                'offline': True, 
-                'z-score_hour': None,
-                'z-score_day': None
-                }
+                'offline': True, 'latest_value': None, 'time_since_last_data': None,
+                'completeness_last_hour_percent': 0.0, 'completeness_last_day_percent': 0.0,
+                'max_abs_zscore_hourly': None, 'max_abs_zscore_daily': None,
+                'num_anomalous_spikes_hourly': 0, 'num_anomalous_spikes_daily': 0,
+                'is_value_stuck': False, 'max_abs_zscore_rate_of_change': None
+            }
         return station_status_results
     
     for station in stations:
-        is_station_offline = True
-        zscore_hour = None
-        zscore_day = None
+        res = {
+                'offline': True, 'latest_value': None, 'time_since_last_data': None,
+                'completeness_last_hour_percent': 0.0, 'completeness_last_day_percent': 0.0,
+                'max_abs_zscore_hourly': None, 'max_abs_zscore_daily': None,
+                'num_anomalous_spikes_hourly': 0, 'num_anomalous_spikes_daily': 0,
+                'is_value_stuck': False, 'max_abs_zscore_rate_of_change': None
+        }
 
         if station not in df.columns:
-            station_status_results[station] = {
-                'offline': True,
-                'z-score_day': None,
-                'z-score_hour': None
-            }
+            station_status_results[station] = res
             continue
 
         station_readings = df[station].dropna()
 
         if station_readings.empty:
-            station_status_results[station] = {
-                'offline': True,
-                'z-score_day': None,
-                'z-score_hour': None
-            }
+            station_status_results[station] = res
             continue
+
 
         latest_timestamp = station_readings.index[-1]
+        res['latest_value'] = station_readings.iloc[-1]
+        res['time_since_last_data'] = current_utc - latest_timestamp
+
         
         if (current_utc - latest_timestamp) <= pd.Timedelta(minutes=offline_threshold):
-            is_station_offline = False
+            res['offline'] = False
 
-        if is_station_offline:
-            station_status_results[station] = {
-                'offline': True,
-                'z-score_day': None,
-                'z-score_hour': None
-            }
+        expected_points_hour = 60
+        actual_points_hour = station_readings[station_readings.index >= one_hour_ago - pd.Timedelta(minutes=2)].count()
+        res['completeness_last_hour_percent'] = round((actual_points_hour / expected_points_hour) * 100, 1)
+        print(actual_points_hour)
+
+        expected_points_day = 24 * 60
+        actual_points_day = station_readings.count()
+        res['completeness_last_day_percent'] = round((actual_points_day / expected_points_day) * 100, 1)
+
+        if res['offline']:
+            station_status_results[station] = res
             continue
-
-        one_hour = current_utc - pd.Timedelta(hours = 1)
-
-        one_hour_readings = station_readings[station_readings.index >= one_hour]
-
-        if len(one_hour_readings) >= min_points:
-            mean_hourly = one_hour_readings.mean()
-            std_hourly = one_hour_readings.std()
-
-            if std_hourly is not None and not pd.isna(std_hourly) and std_hourly > 1e-6:
-                zscore_hour = (one_hour_readings - mean_hourly) / std_hourly
-                if not zscore_hour.empty:
-                    index_max = zscore_hour.abs().idxmax()
-                    max_zscore_hour = zscore_hour.loc[index_max]
-            elif std_hourly is not None and not pd.isna(std_hourly) and std_hourly <= 1e-6:
-                if one_hour_readings.nunique() <= 1:
-                    max_zscore_hour = 0.0
 
         if len(station_readings) >= min_points:
             mean_daily = station_readings.mean()
             std_daily = station_readings.std()
 
             if std_daily is not None and not pd.isna(std_daily) and std_daily > 1e-6:
-                zscore_day = (station_readings - mean_daily) / std_daily
-                if not zscore_day.empty:
-                    index_max = zscore_day.abs().idxmax()
-                    max_zscore_day = zscore_day.loc[index_max]
+                zscore_day_series = (station_readings - mean_daily) / std_daily
+                if not zscore_day_series.empty:
+                    idx_max_abs_daily = zscore_day_series.abs().idxmax()
+                    res['max_abs_zscore_daily'] = zscore_day_series.loc[idx_max_abs_daily]
+                    res['num_anomalous_spikes_daily'] = np.sum(np.abs(zscore_day_series) > spike_dip)
+            
             elif std_daily is not None and not pd.isna(std_daily) and std_daily <= 1e-6:
                 if station_readings.nunique() <= 1:
-                    max_zscore_day = 0.0
+                    res['max_abs_zscore_daily'] = 0.0
 
-            station_status_results[station] = {
-                'offline': is_station_offline,
-                'z-score_day': max_zscore_day,
-                'z-score_hour': max_zscore_day
-            }
+        station_readings_hourly = station_readings[station_readings.index >= one_hour_ago]
 
-    return station_status_results
+        if len(station_readings_hourly) >= min_points:
+            mean_hourly = station_readings_hourly.mean()
+            std_hourly = station_readings_hourly.std()
+
+            if std_hourly is not None and not pd.isna(std_hourly) and std_hourly > 1e-6:
+                zscore_hourly_series = (station_readings_hourly - mean_hourly) / std_hourly
+                if not zscore_hourly_series.empty:
+                    idx_max_abs_hourly = zscore_hourly_series.abs().idxmax()
+                    res['max_abs_zscore_hourly'] = zscore_hourly_series.loc[idx_max_abs_hourly]
+                    res['num_anomalous_spikes_hourly'] = np.sum(np.abs(zscore_hourly_series) > spike_dip)
+            
+            elif std_hourly is not None and not pd.isna(std_hourly) and std_hourly <= 1e-6:
+                if station_readings_hourly.nunique() <= 1:
+                    res['max_abs_zscore_hourly'] = 0.0
+        
+        if len(station_readings) >= stuck_points:
+            recent_values = station_readings.iloc[-stuck_points:]
+            if recent_values.nunique() == 1:
+                res['is_value_stuck'] = True
+
+
+        if len(station_readings) >= min_points + 1:
+            differences = station_readings.diff().dropna()
+            if len(differences) >= min_points:
+                mean_diff = differences.mean()
+                std_diff = differences.std()
+                if std_diff is not None and not pd.isna(std_diff) and std_diff > 1e-6:
+                    zscores_diff_series = (differences - mean_diff) / std_diff
+                    if not zscores_diff_series.empty:
+                        idx_max_abs_diff = zscores_diff_series.abs().idxmax()
+                        res['max_abs_zscore_rate_of_change'] = zscores_diff_series.loc[idx_max_abs_diff]
+                
+                elif std_diff is not None and not pd.isna(std_diff) and std_diff <= 1e-6:
+                    if differences.nunique() <= 1:
+                        res['max_abs_zscore_rate_of_change'] = 0.0
+
+        station_status_results[station] = res
+
+    return station_status_results 
